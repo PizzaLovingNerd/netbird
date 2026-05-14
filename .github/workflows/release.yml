@@ -417,6 +417,92 @@ jobs:
           path: dist/
           retention-days: 3
 
+  release_ui_arm64:
+    runs-on: ubuntu-24.04-arm
+    outputs:
+      release_ui_arm64_artifact_url: ${{ steps.upload_release_ui_arm64.outputs.artifact-url }}
+    steps:
+      - name: Parse semver string
+        id: semver_parser
+        uses: booxmedialtd/ws-action-parse-semver@v1
+        with:
+          input_string: ${{ (startsWith(github.ref, 'refs/tags/v') && github.ref) || 'refs/tags/v0.0.0' }}
+          version_extractor_regex: '\/v(.*)$'
+
+      - if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+        run: echo "flags=--snapshot" >> $GITHUB_ENV
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # It is required for GoReleaser to work properly
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: "go.mod"
+          cache: false
+      - name: Cache Go modules
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: ${{ runner.os }}-ui-go-releaser-arm64-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-ui-go-releaser-arm64-
+
+      - name: Install modules
+        run: go mod tidy
+
+      - name: check git status
+        run: git --no-pager diff --exit-code
+
+      - name: Install dependencies
+        run: sudo apt update && sudo apt install -y -q libappindicator3-dev gir1.2-appindicator3-0.1 libxxf86vm-dev xorg-dev
+
+      - name: Decode GPG signing key
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+        env:
+          GPG_RPM_PRIVATE_KEY: ${{ secrets.GPG_RPM_PRIVATE_KEY }}
+        run: |
+          echo "$GPG_RPM_PRIVATE_KEY" | base64 -d > /tmp/gpg-rpm-signing-key.asc
+          echo "GPG_RPM_KEY_FILE=/tmp/gpg-rpm-signing-key.asc" >> $GITHUB_ENV
+
+      - name: Run GoReleaser
+        uses: goreleaser/goreleaser-action@v4
+        with:
+          version: ${{ env.GORELEASER_VER }}
+          args: release --config .goreleaser_ui_arm64.yaml --clean ${{ env.flags }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          UPLOAD_DEBIAN_SECRET: ${{ secrets.PKG_UPLOAD_SECRET }}
+          UPLOAD_YUM_SECRET: ${{ secrets.PKG_UPLOAD_SECRET }}
+          GPG_RPM_KEY_FILE: ${{ env.GPG_RPM_KEY_FILE }}
+          NFPM_NETBIRD_UI_RPM_PASSPHRASE: ${{ secrets.GPG_RPM_PASSPHRASE }}
+      - name: Verify RPM signatures
+        run: |
+          docker run --rm -v $(pwd)/dist:/dist fedora:41 bash -c '
+            dnf install -y -q rpm-sign curl >/dev/null 2>&1
+            curl -sSL https://pkgs.netbird.io/yum/repodata/repomd.xml.key -o /tmp/rpm-pub.key
+            rpm --import /tmp/rpm-pub.key
+            echo "=== Verifying RPM signatures ==="
+            for rpm_file in /dist/*.rpm; do
+              [ -f "$rpm_file" ] || continue
+              echo "--- $(basename $rpm_file) ---"
+              rpm -K "$rpm_file"
+            done
+          '
+      - name: Clean up GPG key
+        if: always()
+        run: rm -f /tmp/gpg-rpm-signing-key.asc
+      - name: upload non tags for debug purposes
+        id: upload_release_ui_arm64
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-ui-arm64
+          path: dist/
+          retention-days: 3
+
   release_ui_darwin:
     runs-on: macos-latest
     outputs:
@@ -611,7 +697,7 @@ jobs:
   comment_release_artifacts:
     name: Comment release artifacts
     runs-on: ubuntu-latest
-    needs: [release, release_ui, release_ui_darwin]
+    needs: [release, release_ui, release_ui_arm64, release_ui_darwin]
     if: ${{ always() && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository }}
     permissions:
       contents: read
@@ -623,12 +709,14 @@ jobs:
         env:
           RELEASE_RESULT: ${{ needs.release.result }}
           RELEASE_UI_RESULT: ${{ needs.release_ui.result }}
+          RELEASE_UI_ARM64_RESULT: ${{ needs.release_ui_arm64.result }}
           RELEASE_UI_DARWIN_RESULT: ${{ needs.release_ui_darwin.result }}
           RELEASE_ARTIFACT_URL: ${{ needs.release.outputs.release_artifact_url }}
           LINUX_PACKAGES_ARTIFACT_URL: ${{ needs.release.outputs.linux_packages_artifact_url }}
           WINDOWS_PACKAGES_ARTIFACT_URL: ${{ needs.release.outputs.windows_packages_artifact_url }}
           MACOS_PACKAGES_ARTIFACT_URL: ${{ needs.release.outputs.macos_packages_artifact_url }}
           RELEASE_UI_ARTIFACT_URL: ${{ needs.release_ui.outputs.release_ui_artifact_url }}
+          RELEASE_UI_ARM64_ARTIFACT_URL: ${{ needs.release_ui_arm64.outputs.release_ui_arm64_artifact_url }}
           RELEASE_UI_DARWIN_ARTIFACT_URL: ${{ needs.release_ui_darwin.outputs.release_ui_darwin_artifact_url }}
           GHCR_IMAGES_MARKDOWN: ${{ needs.release.outputs.ghcr_images }}
         with:
@@ -651,6 +739,7 @@ jobs:
               ['Windows packages', process.env.WINDOWS_PACKAGES_ARTIFACT_URL, process.env.RELEASE_RESULT],
               ['macOS packages', process.env.MACOS_PACKAGES_ARTIFACT_URL, process.env.RELEASE_RESULT],
               ['UI artifacts', process.env.RELEASE_UI_ARTIFACT_URL, process.env.RELEASE_UI_RESULT],
+              ['UI ARM64 artifacts', process.env.RELEASE_UI_ARM64_ARTIFACT_URL, process.env.RELEASE_UI_ARM64_RESULT],
               ['UI macOS artifacts', process.env.RELEASE_UI_DARWIN_ARTIFACT_URL, process.env.RELEASE_UI_DARWIN_RESULT],
             ];
 
@@ -707,7 +796,7 @@ jobs:
 
   trigger_signer:
     runs-on: ubuntu-latest
-    needs: [release, release_ui, release_ui_darwin, test_windows_installer]
+    needs: [release, release_ui, release_ui_arm64, release_ui_darwin, test_windows_installer]
     if: startsWith(github.ref, 'refs/tags/')
     steps:
       - name: Trigger binaries sign pipelines
