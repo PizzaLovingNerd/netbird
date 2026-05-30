@@ -1,6 +1,7 @@
 name: Release
 
 on:
+  workflow_dispatch:
   push:
     tags:
       - "v*"
@@ -22,6 +23,7 @@ jobs:
   release_freebsd_port:
     name: "FreeBSD Port / Build & Test"
     runs-on: ubuntu-22.04
+    if: github.event_name != 'workflow_dispatch'
     steps:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -124,6 +126,7 @@ jobs:
 
   release:
     runs-on: ubuntu-24.04-8-core
+    if: github.event_name != 'workflow_dispatch'
     outputs:
       release_artifact_url: ${{ steps.upload_release.outputs.artifact-url }}
       linux_packages_artifact_url: ${{ steps.upload_linux_packages.outputs.artifact-url }}
@@ -319,6 +322,7 @@ jobs:
 
   release_ui:
     runs-on: ubuntu-latest
+    if: github.event_name != 'workflow_dispatch'
     outputs:
       release_ui_artifact_url: ${{ steps.upload_release_ui.outputs.artifact-url }}
     steps:
@@ -461,7 +465,7 @@ jobs:
         run: sudo apt update && sudo apt install -y -q libappindicator3-dev gir1.2-appindicator3-0.1 libxxf86vm-dev xorg-dev
 
       - name: Decode GPG signing key
-        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+        if: startsWith(github.ref, 'refs/tags/')
         env:
           GPG_RPM_PRIVATE_KEY: ${{ secrets.GPG_RPM_PRIVATE_KEY }}
         run: |
@@ -472,7 +476,7 @@ jobs:
         uses: goreleaser/goreleaser-action@v4
         with:
           version: ${{ env.GORELEASER_VER }}
-          args: release --config .goreleaser_ui_arm64.yaml --clean ${{ env.flags }}
+          args: release --config .goreleaser_ui_arm64.yaml --clean --snapshot --skip=publish
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           UPLOAD_DEBIAN_SECRET: ${{ secrets.PKG_UPLOAD_SECRET }}
@@ -480,6 +484,7 @@ jobs:
           GPG_RPM_KEY_FILE: ${{ env.GPG_RPM_KEY_FILE }}
           NFPM_NETBIRD_UI_RPM_PASSPHRASE: ${{ secrets.GPG_RPM_PASSPHRASE }}
       - name: Verify RPM signatures
+        if: startsWith(github.ref, 'refs/tags/')
         run: |
           docker run --rm -v $(pwd)/dist:/dist fedora:41 bash -c '
             dnf install -y -q rpm-sign curl >/dev/null 2>&1
@@ -505,6 +510,7 @@ jobs:
 
   release_ui_darwin:
     runs-on: macos-latest
+    if: github.event_name != 'workflow_dispatch'
     outputs:
       release_ui_darwin_artifact_url: ${{ steps.upload_release_ui_darwin.outputs.artifact-url }}
     steps:
@@ -552,6 +558,7 @@ jobs:
   test_windows_installer:
     name: "Windows Installer / Build Test"
     runs-on: windows-2022
+    if: github.event_name != 'workflow_dispatch'
     needs: [release, release_ui]
     strategy:
       fail-fast: false
